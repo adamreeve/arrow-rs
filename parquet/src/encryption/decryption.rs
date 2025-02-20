@@ -207,28 +207,31 @@ impl FileDecryptor {
         decryption_properties: &FileDecryptionProperties,
         aad_file_unique: Vec<u8>,
         aad_prefix: Vec<u8>,
-    ) -> Self {
+    ) -> Result<Self> {
         let file_aad = [aad_prefix.as_slice(), aad_file_unique.as_slice()].concat();
-        let footer_decryptor = RingGcmBlockDecryptor::new(&decryption_properties.footer_key);
+        let footer_decryptor = RingGcmBlockDecryptor::new(&decryption_properties.footer_key)?;
 
-        Self {
+        Ok(Self {
             // todo decr: if no key available yet (not set in properties, will be retrieved from metadata)
             footer_decryptor: Some(Arc::new(footer_decryptor)),
             decryption_properties: decryption_properties.clone(),
             file_aad,
-        }
+        })
     }
 
     pub(crate) fn get_footer_decryptor(&self) -> Arc<dyn BlockDecryptor> {
         self.footer_decryptor.clone().unwrap()
     }
 
-    pub(crate) fn get_column_data_decryptor(&self, column_name: &[u8]) -> Arc<dyn BlockDecryptor> {
+    pub(crate) fn get_column_data_decryptor(
+        &self,
+        column_name: &[u8],
+    ) -> Result<Arc<dyn BlockDecryptor>> {
         match self.decryption_properties.column_keys.as_ref() {
-            None => self.get_footer_decryptor(),
+            None => Ok(self.get_footer_decryptor()),
             Some(column_keys) => match column_keys.get(column_name) {
-                None => self.get_footer_decryptor(),
-                Some(column_key) => Arc::new(RingGcmBlockDecryptor::new(column_key)),
+                None => Ok(self.get_footer_decryptor()),
+                Some(column_key) => Ok(Arc::new(RingGcmBlockDecryptor::new(column_key)?)),
             },
         }
     }
@@ -236,7 +239,7 @@ impl FileDecryptor {
     pub(crate) fn get_column_metadata_decryptor(
         &self,
         column_name: &[u8],
-    ) -> Arc<dyn BlockDecryptor> {
+    ) -> Result<Arc<dyn BlockDecryptor>> {
         // Once GCM CTR mode is implemented, data and metadata decryptors may be different
         self.get_column_data_decryptor(column_name)
     }

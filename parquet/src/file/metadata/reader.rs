@@ -833,11 +833,7 @@ fn get_file_decryptor(
                 .ok_or_else(|| general_err!("AAD unique file identifier is not set"))?;
             let aad_prefix: Vec<u8> = algo.aad_prefix.unwrap_or_default();
 
-            Ok(FileDecryptor::new(
-                file_decryption_properties,
-                aad_file_unique,
-                aad_prefix,
-            ))
+            FileDecryptor::new(file_decryption_properties, aad_file_unique, aad_prefix)
         }
         EncryptionAlgorithm::AESGCMCTRV1(_) => Err(nyi_err!(
             "The AES_GCM_CTR_V1 encryption algorithm is not yet supported"
