@@ -103,17 +103,14 @@ use crate::encryption::{
 };
 use crate::errors::{ParquetError, Result};
 #[cfg(feature = "encryption")]
-use crate::file::column_crypto_metadata::ColumnCryptoMetaData;
-#[cfg(feature = "encryption")]
-use crate::format::ColumnCryptoMetaData as TColumnCryptoMetaData;
-
-#[cfg(feature = "encryption")]
-use crate::file::column_crypto_metadata;
+use crate::file::column_crypto_metadata::{self, ColumnCryptoMetaData};
 pub(crate) use crate::file::metadata::memory::HeapSize;
 use crate::file::page_encoding_stats::{self, PageEncodingStats};
 use crate::file::page_index::index::Index;
 use crate::file::page_index::offset_index::OffsetIndexMetaData;
 use crate::file::statistics::{self, Statistics};
+#[cfg(feature = "encryption")]
+use crate::format::ColumnCryptoMetaData as TColumnCryptoMetaData;
 use crate::format::{
     BoundaryOrder, ColumnChunk, ColumnIndex, ColumnMetaData, OffsetIndex, PageLocation, RowGroup,
     SizeStatistics, SortingColumn,
@@ -664,7 +661,10 @@ impl RowGroupMetaData {
                     }
                     Some(TColumnCryptoMetaData::ENCRYPTIONWITHCOLUMNKEY(crypto_metadata)) => {
                         let column_name = crypto_metadata.path_in_schema.join(".");
-                        decryptor.get_column_metadata_decryptor(column_name.as_str())?
+                        decryptor.get_column_metadata_decryptor(
+                            column_name.as_str(),
+                            crypto_metadata.key_metadata.as_deref(),
+                        )?
                     }
                     Some(TColumnCryptoMetaData::ENCRYPTIONWITHFOOTERKEY(_)) => {
                         decryptor.get_footer_decryptor()?
@@ -1993,7 +1993,7 @@ mod tests {
         #[cfg(not(feature = "encryption"))]
         let base_expected_size = 2312;
         #[cfg(feature = "encryption")]
-        let base_expected_size = 2640;
+        let base_expected_size = 2656;
 
         assert_eq!(parquet_meta.memory_size(), base_expected_size);
 
@@ -2023,7 +2023,7 @@ mod tests {
         #[cfg(not(feature = "encryption"))]
         let bigger_expected_size = 2816;
         #[cfg(feature = "encryption")]
-        let bigger_expected_size = 3144;
+        let bigger_expected_size = 3160;
 
         // more set fields means more memory usage
         assert!(bigger_expected_size > base_expected_size);

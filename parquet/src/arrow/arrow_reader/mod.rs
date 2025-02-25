@@ -706,30 +706,26 @@ impl<T: ChunkReader + 'static> Iterator for ReaderPageIterator<T> {
                 .schema_descr()
                 .column(self.column_idx);
 
-            if file_decryptor.is_column_encrypted(column_name.name()) {
-                let data_decryptor = file_decryptor.get_column_data_decryptor(column_name.name());
-                let data_decryptor = match data_decryptor {
-                    Ok(data_decryptor) => data_decryptor,
-                    Err(err) => return Some(Err(err)),
-                };
+            let crypto_metadata = self
+                .metadata
+                .row_group(rg_idx)
+                .column(self.column_idx)
+                .crypto_metadata();
 
-                let metadata_decryptor =
-                    file_decryptor.get_column_metadata_decryptor(column_name.name());
-                let metadata_decryptor = match metadata_decryptor {
-                    Ok(metadata_decryptor) => metadata_decryptor,
-                    Err(err) => return Some(Err(err)),
-                };
-
-                let crypto_context = CryptoContext::new(
-                    rg_idx,
-                    self.column_idx,
-                    data_decryptor,
-                    metadata_decryptor,
-                    file_decryptor.file_aad().clone(),
-                );
-                Some(Arc::new(crypto_context))
-            } else {
-                None
+            match crypto_metadata {
+                Some(crypto_metadata) => {
+                    match CryptoContext::for_column(
+                        file_decryptor,
+                        crypto_metadata,
+                        column_name.name(),
+                        rg_idx,
+                        self.column_idx,
+                    ) {
+                        Ok(context) => Some(Arc::new(context)),
+                        Err(err) => return Some(Err(err)),
+                    }
+                }
+                None => None,
             }
         } else {
             None
@@ -1026,7 +1022,9 @@ mod tests {
     use crate::schema::parser::parse_message_type;
     use crate::schema::types::{Type, TypePtr};
     #[cfg(feature = "encryption")]
-    use crate::util::test_common::encryption_util::verify_encryption_test_file_read;
+    use crate::util::test_common::encryption_util::{
+        verify_encryption_test_file_read, TestKeyRetriever,
+    };
     use crate::util::test_common::rand_gen::RandGen;
 
     #[test]
@@ -1936,6 +1934,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "encryption")]
+    fn test_non_uniform_encryption_plaintext_footer_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/encrypt_columns_plaintext_footer.parquet.encrypted");
+        let file = File::open(path).unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec())
+            .with_key("kc1".to_owned(), "1234567890123450".as_bytes().to_vec())
+            .with_key("kc2".to_owned(), "1234567890123451".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
+
+        verify_encryption_test_file_read(file, decryption_properties);
+    }
+
+    #[test]
     fn test_non_uniform_encryption_plaintext_footer_without_decryption() {
         let testdata = arrow::util::test_util::parquet_test_data();
         let path = format!("{testdata}/encrypt_columns_plaintext_footer.parquet.encrypted");
@@ -2014,6 +2032,26 @@ mod tests {
 
     #[test]
     #[cfg(feature = "encryption")]
+    fn test_non_uniform_encryption_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/encrypt_columns_and_footer.parquet.encrypted");
+        let file = File::open(path).unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec())
+            .with_key("kc1".to_owned(), "1234567890123450".as_bytes().to_vec())
+            .with_key("kc2".to_owned(), "1234567890123451".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
+
+        verify_encryption_test_file_read(file, decryption_properties);
+    }
+
+    #[test]
+    #[cfg(feature = "encryption")]
     fn test_uniform_encryption() {
         let testdata = arrow::util::test_util::parquet_test_data();
         let path = format!("{testdata}/uniform_encryption.parquet.encrypted");
@@ -2057,6 +2095,24 @@ mod tests {
             result.unwrap_err().to_string(),
             "Parquet error: Parquet file has an encrypted footer but no decryption properties were provided"
         );
+    }
+
+    #[test]
+    #[cfg(feature = "encryption")]
+    fn test_uniform_encryption_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/uniform_encryption.parquet.encrypted");
+        let file = File::open(path).unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
+
+        verify_encryption_test_file_read(file, decryption_properties);
     }
 
     #[test]

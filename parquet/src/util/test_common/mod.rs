@@ -23,5 +23,5 @@ pub mod file_util;
 #[cfg(test)]
 pub mod rand_gen;
 
-#[cfg(all(test, feature = "encryption", feature = "arrow"))]
+#[cfg(all(test, feature = "encryption"))]
 pub mod encryption_util;

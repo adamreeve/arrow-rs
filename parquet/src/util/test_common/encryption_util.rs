@@ -18,20 +18,22 @@
 use crate::arrow::arrow_reader::{
     ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
-use crate::arrow::ParquetRecordBatchStreamBuilder;
-use arrow_array::cast::AsArray;
-use arrow_array::{types, RecordBatch};
-
 use crate::arrow::ArrowWriter;
-use crate::encryption::decrypt::FileDecryptionProperties;
+use crate::arrow::ParquetRecordBatchStreamBuilder;
+use crate::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
 use crate::encryption::encrypt::FileEncryptionProperties;
 use crate::errors::ParquetError;
 use crate::file::metadata::FileMetaData;
 use crate::file::properties::WriterProperties;
+use arrow_array::cast::AsArray;
+use arrow_array::{types, RecordBatch};
 use futures::TryStreamExt;
+use std::collections::HashMap;
 use std::fs::File;
+use std::sync::Mutex;
 
 /// Tests reading an encrypted file from the parquet-testing repository
+#[cfg(feature = "arrow")]
 pub(crate) fn verify_encryption_test_file_read(
     file: File,
     decryption_properties: FileDecryptionProperties,
@@ -50,6 +52,7 @@ pub(crate) fn verify_encryption_test_file_read(
     verify_encryption_test_data(record_batches, file_metadata.clone(), metadata);
 }
 
+#[cfg(all(feature = "arrow", feature = "async"))]
 pub(crate) async fn verify_encryption_test_file_read_async(
     file: &mut tokio::fs::File,
     decryption_properties: FileDecryptionProperties,
@@ -72,6 +75,7 @@ pub(crate) async fn verify_encryption_test_file_read_async(
 }
 
 /// Tests reading an encrypted file from the parquet-testing repository
+#[cfg(feature = "arrow")]
 fn verify_encryption_test_data(
     record_batches: Vec<RecordBatch>,
     file_metadata: FileMetaData,
@@ -139,7 +143,7 @@ fn verify_encryption_test_data(
     assert_eq!(row_count, file_metadata.num_rows() as usize);
 }
 
-#[cfg(feature = "encryption")]
+#[cfg(feature = "arrow")]
 pub fn read_and_roundtrip_to_encrypted_file(
     path: &str,
     decryption_properties: FileDecryptionProperties,
@@ -174,4 +178,42 @@ pub fn read_and_roundtrip_to_encrypted_file(
 
     // check re-written example data
     verify_encryption_test_file_read(temp_file, decryption_properties);
+}
+
+/// A KeyRetriever to use in Parquet encryption tests,
+/// which stores a map from key names/metadata to encryption key bytes.
+pub struct TestKeyRetriever {
+    keys: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl TestKeyRetriever {
+    pub fn new() -> Self {
+        Self {
+            keys: Mutex::new(HashMap::default()),
+        }
+    }
+
+    pub fn with_key(self, key_name: String, key: Vec<u8>) -> Self {
+        {
+            let mut keys = self.keys.lock().unwrap();
+            keys.insert(key_name, key);
+        }
+        self
+    }
+}
+
+impl KeyRetriever for TestKeyRetriever {
+    fn retrieve_key(&self, key_metadata: &[u8]) -> crate::errors::Result<Vec<u8>> {
+        let key_metadata = String::from_utf8(key_metadata.to_vec()).map_err(|e| {
+            ParquetError::General(format!("Could not convert key metadata to string: {}", e))
+        })?;
+        let keys = self.keys.lock().unwrap();
+        match keys.get(&key_metadata) {
+            Some(key) => Ok(key.clone()),
+            None => Err(ParquetError::General(format!(
+                "Could not retrieve key for metadata {:?}",
+                key_metadata
+            ))),
+        }
+    }
 }

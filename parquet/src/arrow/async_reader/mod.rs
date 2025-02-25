@@ -1029,29 +1029,23 @@ impl RowGroups for InMemoryRowGroup<'_> {
     fn column_chunks(&self, i: usize) -> Result<Box<dyn PageIterator>> {
         #[cfg(feature = "encryption")]
         let crypto_context = if let Some(file_decryptor) = self.metadata.clone().file_decryptor() {
-            let column_name = &self
+            let column_name = &self.metadata.file_metadata().schema_descr().column(i);
+
+            let crypto_metadata = self
                 .metadata
-                .clone()
-                .file_metadata()
-                .schema_descr()
-                .column(i);
+                .row_group(self.row_group_idx)
+                .column(i)
+                .crypto_metadata();
 
-            if file_decryptor.is_column_encrypted(column_name.name()) {
-                let data_decryptor =
-                    file_decryptor.get_column_data_decryptor(column_name.name())?;
-                let metadata_decryptor =
-                    file_decryptor.get_column_metadata_decryptor(column_name.name())?;
-
-                let crypto_context = CryptoContext::new(
+            match crypto_metadata {
+                Some(crypto_metadata) => Some(Arc::new(CryptoContext::for_column(
+                    file_decryptor,
+                    crypto_metadata,
+                    column_name.name(),
                     self.row_group_idx,
                     i,
-                    data_decryptor,
-                    metadata_decryptor,
-                    file_decryptor.file_aad().clone(),
-                );
-                Some(Arc::new(crypto_context))
-            } else {
-                None
+                )?)),
+                None => None,
             }
         } else {
             None
@@ -1172,7 +1166,9 @@ mod tests {
     use crate::file::metadata::ParquetMetaDataReader;
     use crate::file::properties::WriterProperties;
     #[cfg(feature = "encryption")]
-    use crate::util::test_common::encryption_util::verify_encryption_test_file_read_async;
+    use crate::util::test_common::encryption_util::{
+        verify_encryption_test_file_read_async, TestKeyRetriever,
+    };
     use arrow::compute::kernels::cmp::eq;
     use arrow::error::Result as ArrowResult;
     use arrow_array::builder::{ListBuilder, StringBuilder};
@@ -2574,6 +2570,28 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "encryption")]
+    async fn test_non_uniform_encryption_plaintext_footer_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/encrypt_columns_plaintext_footer.parquet.encrypted");
+        let mut file = File::open(&path).await.unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec())
+            .with_key("kc1".to_owned(), "1234567890123450".as_bytes().to_vec())
+            .with_key("kc2".to_owned(), "1234567890123451".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
+
+        verify_encryption_test_file_read_async(&mut file, decryption_properties)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_non_uniform_encryption_plaintext_footer_without_decryption() {
         let testdata = arrow::util::test_util::parquet_test_data();
         let path = format!("{testdata}/encrypt_columns_plaintext_footer.parquet.encrypted");
@@ -2657,6 +2675,28 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "encryption")]
+    async fn test_non_uniform_encryption_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/encrypt_columns_and_footer.parquet.encrypted");
+        let mut file = File::open(&path).await.unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec())
+            .with_key("kc1".to_owned(), "1234567890123450".as_bytes().to_vec())
+            .with_key("kc2".to_owned(), "1234567890123451".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
+
+        verify_encryption_test_file_read_async(&mut file, decryption_properties)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "encryption")]
     async fn test_uniform_encryption() {
         let testdata = arrow::util::test_util::parquet_test_data();
         let path = format!("{testdata}/uniform_encryption.parquet.encrypted");
@@ -2666,6 +2706,26 @@ mod tests {
         let decryption_properties = FileDecryptionProperties::builder(key_code.to_vec())
             .build()
             .unwrap();
+
+        verify_encryption_test_file_read_async(&mut file, decryption_properties)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "encryption")]
+    async fn test_uniform_encryption_with_key_retriever() {
+        let testdata = arrow::util::test_util::parquet_test_data();
+        let path = format!("{testdata}/uniform_encryption.parquet.encrypted");
+        let mut file = File::open(&path).await.unwrap();
+
+        let key_retriever = TestKeyRetriever::new()
+            .with_key("kf".to_owned(), "0123456789012345".as_bytes().to_vec());
+
+        let decryption_properties =
+            FileDecryptionProperties::with_key_retriever(Arc::new(key_retriever))
+                .build()
+                .unwrap();
 
         verify_encryption_test_file_read_async(&mut file, decryption_properties)
             .await
