@@ -43,7 +43,7 @@ use crate::data_type::{ByteArray, FixedLenByteArray};
 #[cfg(feature = "encryption")]
 use crate::encryption::{encrypt::FileEncryptor, page_encryptor::PageEncryptor};
 use crate::errors::{ParquetError, Result};
-use crate::file::metadata::{KeyValue, RowGroupMetaData};
+use crate::file::metadata::{KeyValue, ParquetMetaData, RowGroupMetaData};
 use crate::file::properties::{WriterProperties, WriterPropertiesPtr};
 use crate::file::reader::{ChunkReader, Length};
 use crate::file::writer::{SerializedFileWriter, SerializedRowGroupWriter};
@@ -356,9 +356,18 @@ impl<W: Write + Send> ArrowWriter<W> {
         self.writer.finish()
     }
 
+    pub fn finish_with_unencrypted_metadata(&mut self) -> Result<ParquetMetaData> {
+        self.flush()?;
+        self.writer.finish_with_unencrypted_metadata()
+    }
+
     /// Close and finalize the underlying Parquet writer
     pub fn close(mut self) -> Result<crate::format::FileMetaData> {
         self.finish()
+    }
+
+    pub fn close_with_unencrypted_metadata(mut self) -> Result<ParquetMetaData> {
+        self.finish_with_unencrypted_metadata()
     }
 }
 

@@ -18,15 +18,8 @@
 //! Contains file writer API, and provides methods to write row groups and columns by
 //! using row group writers and column writers respectively.
 
+use crate::basic::ColumnOrder;
 use crate::bloom_filter::Sbbf;
-use crate::format as parquet;
-use crate::format::{ColumnIndex, OffsetIndex};
-use crate::thrift::TSerializable;
-use std::fmt::Debug;
-use std::io::{BufWriter, IoSlice, Read};
-use std::{io::Write, sync::Arc};
-use thrift::protocol::TCompactOutputProtocol;
-
 use crate::column::writer::{get_typed_column_writer_mut, ColumnCloseResult, ColumnWriterImpl};
 use crate::column::{
     page::{CompressedPage, PageWriteSpec, PageWriter},
@@ -45,9 +38,16 @@ use crate::file::reader::ChunkReader;
 #[cfg(feature = "encryption")]
 use crate::file::PARQUET_MAGIC_ENCR_FOOTER;
 use crate::file::{metadata::*, PARQUET_MAGIC};
+use crate::format as parquet;
+use crate::format::{ColumnIndex, OffsetIndex};
 use crate::schema::types::{ColumnDescPtr, SchemaDescPtr, SchemaDescriptor, TypePtr};
+use crate::thrift::TSerializable;
 #[cfg(not(feature = "encryption"))]
 use crate::util::never::Never;
+use std::fmt::Debug;
+use std::io::{BufWriter, IoSlice, Read};
+use std::{io::Write, sync::Arc};
+use thrift::protocol::TCompactOutputProtocol;
 
 /// A wrapper around a [`Write`] that keeps track of the number
 /// of bytes that have been written. The given [`Write`] is wrapped
@@ -285,6 +285,16 @@ impl<W: Write + Send> SerializedFileWriter<W> {
         Ok(metadata)
     }
 
+    pub fn finish_with_unencrypted_metadata(&mut self) -> Result<ParquetMetaData> {
+        self.assert_previous_writer_closed()?;
+        self.write_metadata()?;
+        self.buf.flush()?;
+
+        let metadata = self.build_parquet_metadata();
+
+        Ok(metadata)
+    }
+
     /// Closes and finalises file writer, returning the file metadata.
     pub fn close(mut self) -> Result<parquet::FileMetaData> {
         self.finish()
@@ -405,6 +415,33 @@ impl<W: Write + Send> SerializedFileWriter<W> {
     #[cfg(feature = "encryption")]
     pub(crate) fn file_encryptor(&self) -> Option<Arc<FileEncryptor>> {
         self.file_encryptor.clone()
+    }
+
+    fn build_parquet_metadata(&self) -> ParquetMetaData {
+        let version = self.props.writer_version().as_num();
+        let row_count = self.row_groups.iter().map(|rg| rg.num_rows()).sum();
+        let created_by = self.props.created_by().to_string();
+
+        let column_orders = (0..self.descr.num_columns())
+            .map(|col_idx| {
+                ColumnOrder::TYPE_DEFINED_ORDER(self.schema_descr().column(col_idx).sort_order())
+            })
+            .collect();
+
+        let file_metadata = FileMetaData::new(
+            version,
+            row_count,
+            Some(created_by),
+            Some(self.kv_metadatas.clone()),
+            self.descr.clone(),
+            Some(column_orders),
+        );
+        ParquetMetaData::new(
+            file_metadata,
+            self.row_groups.clone(),
+            #[cfg(feature = "encryption")]
+            None,
+        )
     }
 }
 
