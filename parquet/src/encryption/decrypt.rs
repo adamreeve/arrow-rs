@@ -192,6 +192,7 @@ impl FileDecryptionProperties {
     }
 
     /// Get the [`KeyRetriever`] to use, if one is set
+    #[cfg(test)]
     pub(crate) fn key_retriever(&self) -> Option<&Arc<dyn KeyRetriever>> {
         match &self.keys {
             DecryptionKeys::Explicit(_) => None,
