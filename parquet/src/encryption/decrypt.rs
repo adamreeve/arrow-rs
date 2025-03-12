@@ -190,6 +190,14 @@ impl FileDecryptionProperties {
     pub fn with_key_retriever(key_retriever: Arc<dyn KeyRetriever>) -> DecryptionPropertiesBuilder {
         DecryptionPropertiesBuilder::new_with_key_retriever(key_retriever)
     }
+
+    /// Get the [`KeyRetriever`] to use, if one is set
+    pub(crate) fn key_retriever(&self) -> Option<&Arc<dyn KeyRetriever>> {
+        match &self.keys {
+            DecryptionKeys::Explicit(_) => None,
+            DecryptionKeys::ViaRetriever(retriever) => Some(retriever),
+        }
+    }
 }
 
 impl std::fmt::Debug for FileDecryptionProperties {
