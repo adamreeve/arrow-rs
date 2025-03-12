@@ -47,6 +47,10 @@ impl EncryptionKey {
     pub fn key(&self) -> &Vec<u8> {
         &self.key
     }
+
+    pub fn key_metadata(&self) -> Option<&Vec<u8>> {
+        self.key_metadata.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,8 +71,18 @@ impl FileEncryptionProperties {
         self.encrypt_footer
     }
 
+    #[cfg(test)]
+    pub fn footer_key(&self) -> &[u8] {
+        &self.footer_key.key
+    }
+
     pub fn footer_key_metadata(&self) -> Option<&Vec<u8>> {
         self.footer_key.key_metadata.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn column_keys(&self) -> &HashMap<String, EncryptionKey> {
+        &self.column_keys
     }
 
     pub fn aad_prefix(&self) -> Option<&Vec<u8>> {
