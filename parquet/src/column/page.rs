@@ -17,12 +17,14 @@
 
 //! Contains Parquet Page definitions and page reader interface.
 
+use std::io::Write;
 use bytes::Bytes;
-
+use thrift::protocol::TCompactOutputProtocol;
 use crate::basic::{Encoding, PageType};
 use crate::errors::{ParquetError, Result};
 use crate::file::statistics::Statistics;
 use crate::format::PageHeader;
+use crate::thrift::TSerializable;
 
 /// Parquet Page definition.
 ///
@@ -459,6 +461,32 @@ pub trait PageWriter: Send {
 
 /// An iterator over pages of one specific column in a parquet file.
 pub trait PageIterator: Iterator<Item = Result<Box<dyn PageReader>>> + Send {}
+
+/// Trait for shared PageWriter functionality
+pub(crate) trait PageWriterPlugin : Send + Sync {
+    fn preprocess_page(&self, page: CompressedPage) -> Result<CompressedPage>;
+
+    fn write_page_header<W: Write>(&self, page_header: &PageHeader, sink: &mut W) -> Result<()>;
+
+    fn increment_page(&mut self) {
+
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct DefaultPageWriterPlugin {}
+
+impl PageWriterPlugin for DefaultPageWriterPlugin {
+    fn preprocess_page(&self, page: CompressedPage) -> Result<CompressedPage> {
+        Ok(page)
+    }
+
+    fn write_page_header<W: Write>(&self, page_header: &PageHeader, sink: &mut W) -> Result<()> {
+        let mut protocol = TCompactOutputProtocol::new(sink);
+        page_header.write_to_out_protocol(&mut protocol)?;
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

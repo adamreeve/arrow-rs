@@ -34,7 +34,7 @@ use super::schema::{add_encoded_arrow_schema_to_metadata, decimal_length_from_pr
 
 use crate::arrow::arrow_writer::byte_array::ByteArrayEncoder;
 use crate::arrow::ArrowSchemaConverter;
-use crate::column::page::{CompressedPage, PageWriteSpec, PageWriter};
+use crate::column::page::{CompressedPage, DefaultPageWriterPlugin, PageWriteSpec, PageWriter, PageWriterPlugin};
 use crate::column::writer::encoder::ColumnValueEncoder;
 use crate::column::writer::{
     get_column_writer, ColumnCloseResult, ColumnWriter, GenericColumnWriter,
@@ -473,30 +473,33 @@ impl Read for ArrowColumnChunkReader {
 /// [`ArrowRowGroupWriter`] on flush, without requiring self-referential borrows
 type SharedColumnChunk = Arc<Mutex<ArrowColumnChunkData>>;
 
-#[derive(Default)]
 struct ArrowPageWriter {
     buffer: SharedColumnChunk,
-    #[cfg(feature = "encryption")]
-    page_encryptor: Option<PageEncryptor>,
-    #[cfg(not(feature = "encryption"))]
-    page_encryptor: Option<Never>,
+    writer_plugin: Box<dyn PageWriterPlugin>,
+}
+
+impl Default for ArrowPageWriter {
+    fn default() -> Self {
+        Self {
+            buffer: Default::default(),
+            writer_plugin: Box::new(DefaultPageWriterPlugin::default())
+        }
+    }
 }
 
 #[cfg(feature = "encryption")]
 impl ArrowPageWriter {
     pub fn with_encryptor(mut self, page_encryptor: Option<PageEncryptor>) -> Self {
-        self.page_encryptor = page_encryptor;
+        if let Some(encryptor) = page_encryptor {
+            self.writer_plugin = Box::new(encryptor);
+        }
         self
     }
 }
 
 impl PageWriter for ArrowPageWriter {
     fn write_page(&mut self, page: CompressedPage) -> Result<PageWriteSpec> {
-        let page = match self.page_encryptor.as_ref() {
-            #[cfg(feature = "encryption")]
-            Some(page_encryptor) => page_encryptor.encrypt_compressed_page(page)?,
-            _ => page,
-        };
+        let page = self.writer_plugin.preprocess_page(page)?;
 
         let data = page.compressed_page().buffer().clone();
 
@@ -505,22 +508,12 @@ impl PageWriter for ArrowPageWriter {
         let header = {
             let mut header = Vec::with_capacity(1024);
 
-            match self.page_encryptor.as_mut() {
-                #[cfg(feature = "encryption")]
-                Some(page_encryptor) => {
-                    page_encryptor.encrypt_page_header(&page_header, &mut header)?;
-                    if page.compressed_page().is_data_page() {
-                        page_encryptor.increment_page();
-                    }
-                }
-                _ => {
-                    let mut protocol = TCompactOutputProtocol::new(&mut header);
-                    page_header.write_to_out_protocol(&mut protocol)?;
-                }
-            };
+            self.writer_plugin.write_page_header(&page_header, &mut header)?;
 
             Bytes::from(header)
         };
+
+        self.writer_plugin.increment_page();
 
         let mut buf = self.buffer.try_lock().unwrap();
 

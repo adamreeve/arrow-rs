@@ -32,6 +32,7 @@ use crate::column::{
     page::{CompressedPage, PageWriteSpec, PageWriter},
     writer::{get_column_writer, ColumnWriter},
 };
+use crate::column::page::{DefaultPageWriterPlugin, PageWriterPlugin};
 use crate::data_type::DataType;
 #[cfg(feature = "encryption")]
 use crate::encryption::encrypt::{
@@ -803,10 +804,7 @@ impl<'a> SerializedColumnWriter<'a> {
 /// `SerializedPageWriter` should not be used after calling `close()`.
 pub struct SerializedPageWriter<'a, W: Write> {
     sink: &'a mut TrackedWrite<W>,
-    #[cfg(feature = "encryption")]
-    page_encryptor: Option<PageEncryptor>,
-    #[cfg(not(feature = "encryption"))]
-    page_encryptor: Option<Never>,
+    writer_plugin: Box<dyn PageWriterPlugin>,
 }
 
 impl<'a, W: Write> SerializedPageWriter<'a, W> {
@@ -814,14 +812,16 @@ impl<'a, W: Write> SerializedPageWriter<'a, W> {
     pub fn new(sink: &'a mut TrackedWrite<W>) -> Self {
         Self {
             sink,
-            page_encryptor: None,
+            writer_plugin: Box::new(DefaultPageWriterPlugin::default()),
         }
     }
 
     #[cfg(feature = "encryption")]
     /// Set the encryptor to use to encrypt page data
     fn with_page_encryptor(mut self, page_encryptor: Option<PageEncryptor>) -> Self {
-        self.page_encryptor = page_encryptor;
+        if let Some(encryptor) = page_encryptor {
+            self.writer_plugin = Box::new(encryptor);
+        }
         self
     }
 
@@ -830,33 +830,22 @@ impl<'a, W: Write> SerializedPageWriter<'a, W> {
     #[inline]
     fn serialize_page_header(&mut self, header: parquet::PageHeader) -> Result<usize> {
         let start_pos = self.sink.bytes_written();
-        match self.page_encryptor.as_ref() {
-            #[cfg(feature = "encryption")]
-            Some(page_encryptor) => {
-                page_encryptor.encrypt_page_header(&header, &mut self.sink)?;
-            }
-            _ => {
-                let mut protocol = TCompactOutputProtocol::new(&mut self.sink);
-                header.write_to_out_protocol(&mut protocol)?;
-            }
-        }
+        self.writer_plugin.write_page_header(&header, &mut self.sink)?;
         Ok(self.sink.bytes_written() - start_pos)
     }
 }
 
 impl<W: Write + Send> PageWriter for SerializedPageWriter<'_, W> {
     fn write_page(&mut self, page: CompressedPage) -> Result<PageWriteSpec> {
-        let page = match self.page_encryptor.as_ref() {
-            #[cfg(feature = "encryption")]
-            Some(page_encryptor) => page_encryptor.encrypt_compressed_page(page)?,
-            _ => page,
-        };
+        let page = self.writer_plugin.preprocess_page(page)?;
 
         let page_type = page.page_type();
         let start_pos = self.sink.bytes_written() as u64;
 
         let page_header = page.to_thrift_header();
         let header_size = self.serialize_page_header(page_header)?;
+
+        self.writer_plugin.increment_page();
 
         self.sink.write_all(page.data())?;
 
@@ -868,12 +857,6 @@ impl<W: Write + Send> PageWriter for SerializedPageWriter<'_, W> {
         spec.bytes_written = self.sink.bytes_written() as u64 - start_pos;
         spec.num_values = page.num_values();
 
-        #[cfg(feature = "encryption")]
-        if let Some(page_encryptor) = self.page_encryptor.as_mut() {
-            if page.compressed_page().is_data_page() {
-                page_encryptor.increment_page();
-            }
-        }
         Ok(spec)
     }
 

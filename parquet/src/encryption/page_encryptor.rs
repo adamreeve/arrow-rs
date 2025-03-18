@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::column::page::CompressedPage;
+use crate::column::page::{CompressedPage, PageWriterPlugin};
 use crate::encryption::encrypt::{encrypt_object, FileEncryptor};
 use crate::encryption::modules::{create_module_aad, ModuleType};
 use crate::errors::{ParquetError, Result};
@@ -78,13 +78,15 @@ impl PageEncryptor {
 
         Ok(encrypted_buffer)
     }
+}
 
-    pub fn encrypt_compressed_page(&self, page: CompressedPage) -> Result<CompressedPage> {
+impl PageWriterPlugin for PageEncryptor {
+    fn preprocess_page(&self, page: CompressedPage) -> Result<CompressedPage> {
         let encrypted_page = self.encrypt_page(&page)?;
         Ok(page.with_new_compressed_buffer(Bytes::from(encrypted_page)))
     }
 
-    pub fn encrypt_page_header<W: Write>(
+    fn write_page_header<W: Write>(
         &self,
         page_header: &PageHeader,
         sink: &mut W,
