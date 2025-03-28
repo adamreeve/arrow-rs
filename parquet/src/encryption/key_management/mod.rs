@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Encryption implementation specific to Parquet, as described
-//! in the [spec](https://github.com/apache/parquet-format/blob/master/Encryption.md).
+//! Encryption Key Management Tools for Parquet
 
-pub(crate) mod ciphers;
-pub mod decrypt;
-pub mod encrypt;
-#[cfg(feature = "key_management")]
-pub mod key_management;
-pub(crate) mod modules;
+pub mod crypto_factory;
+mod key_encryption;
+mod key_material;
+mod key_unwrapper;
+mod key_wrapper;
+pub mod kms;
+mod kms_manager;
+#[cfg(any(test, feature = "test_common"))]
+pub mod test_kms;

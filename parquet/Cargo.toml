@@ -121,7 +121,8 @@ crc = ["dep:crc32fast"]
 simdutf8 = ["dep:simdutf8"]
 # Enable Parquet modular encryption support
 encryption = ["dep:ring"]
-
+# Enable high level encryption key management tools
+key_management = ["encryption", "base64", "serde", "serde_json"]
 
 [[example]]
 name = "external_metadata"
@@ -147,6 +148,11 @@ path = "./examples/async_read_parquet.rs"
 name = "read_with_rowgroup"
 required-features = ["arrow", "async"]
 path = "./examples/read_with_rowgroup.rs"
+
+[[example]]
+name = "round_trip_encrypted_parquet"
+required-features = ["arrow", "encryption", "key_management"]
+path = "./examples/round_trip_encrypted_parquet.rs"
 
 [[test]]
 name = "arrow_writer_layout"
