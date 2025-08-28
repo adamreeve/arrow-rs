@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::fmt::Formatter;
 use std::io::Read;
 use std::sync::Arc;
+use async_trait::async_trait;
 
 /// Trait for retrieving an encryption key using the key's metadata
 ///
@@ -102,6 +103,13 @@ use std::sync::Arc;
 pub trait KeyRetriever: Send + Sync {
     /// Retrieve a decryption key given the key metadata
     fn retrieve_key(&self, key_metadata: &[u8]) -> Result<Vec<u8>>;
+}
+
+/// Async version of [`KeyRetriever`]
+#[async_trait]
+pub trait AsyncKeyRetriever: Send + Sync {
+    /// Retrieve a decryption key given the key metadata
+    async fn retrieve_key(&self, key_metadata: &[u8]) -> Result<Vec<u8>>;
 }
 
 pub(crate) fn read_and_decrypt<T: Read>(
@@ -275,6 +283,7 @@ struct ExplicitDecryptionKeys {
 enum DecryptionKeys {
     Explicit(ExplicitDecryptionKeys),
     ViaRetriever(Arc<dyn KeyRetriever>),
+    ViaAsyncRetriever(Arc<dyn AsyncKeyRetriever>),
 }
 
 impl PartialEq for DecryptionKeys {
@@ -349,6 +358,14 @@ impl FileDecryptionProperties {
         DecryptionPropertiesBuilderWithRetriever::new(key_retriever)
     }
 
+    /// Returns a new [`FileDecryptionProperties`] builder that uses an [`AsyncKeyRetriever`]
+    /// to get decryption keys based on key metadata.
+    pub fn with_async_key_retriever(
+        key_retriever: Arc<dyn AsyncKeyRetriever>,
+    ) -> DecryptionPropertiesBuilderWithRetriever {
+        DecryptionPropertiesBuilderWithRetriever::new_async(key_retriever)
+    }
+
     /// AAD prefix string uniquely identifies the file and prevents file swapping
     pub fn aad_prefix(&self) -> Option<&Vec<u8>> {
         self.aad_prefix.as_ref()
@@ -367,6 +384,9 @@ impl FileDecryptionProperties {
             DecryptionKeys::ViaRetriever(retriever) => {
                 let key = retriever.retrieve_key(key_metadata.unwrap_or_default())?;
                 Ok(Cow::Owned(key))
+            }
+            DecryptionKeys::ViaAsyncRetriever(_) => {
+                Err(general_err!("Cannot use async key retriever in synchronous API"))
             }
         }
     }
@@ -387,6 +407,50 @@ impl FileDecryptionProperties {
             },
             DecryptionKeys::ViaRetriever(retriever) => {
                 let key = retriever.retrieve_key(key_metadata.unwrap_or_default())?;
+                Ok(Cow::Owned(key))
+            }
+            DecryptionKeys::ViaAsyncRetriever(_) => {
+                Err(general_err!("Cannot use async key retriever in synchronous API"))
+            }
+        }
+    }
+
+    /// Get the encryption key for decrypting a file's footer,
+    /// and also column data if uniform encryption is used.
+    pub async fn footer_key_async(&self, key_metadata: Option<&[u8]>) -> Result<Cow<'_, Vec<u8>>> {
+        match &self.keys {
+            DecryptionKeys::Explicit(keys) => Ok(Cow::Borrowed(&keys.footer_key)),
+            DecryptionKeys::ViaRetriever(retriever) => {
+                let key = retriever.retrieve_key(key_metadata.unwrap_or_default())?;
+                Ok(Cow::Owned(key))
+            }
+            DecryptionKeys::ViaAsyncRetriever(retriever) => {
+                let key = retriever.retrieve_key(key_metadata.unwrap_or_default()).await?;
+                Ok(Cow::Owned(key))
+            }
+        }
+    }
+
+    /// Get the column-specific encryption key for decrypting column data and metadata within a file
+    pub async fn column_key_async(
+        &self,
+        column_name: &str,
+        key_metadata: Option<&[u8]>,
+    ) -> Result<Cow<'_, Vec<u8>>> {
+        match &self.keys {
+            DecryptionKeys::Explicit(keys) => match keys.column_keys.get(column_name) {
+                None => Err(general_err!(
+                    "No column decryption key set for encrypted column '{}'",
+                    column_name
+                )),
+                Some(key) => Ok(Cow::Borrowed(key)),
+            },
+            DecryptionKeys::ViaRetriever(retriever) => {
+                let key = retriever.retrieve_key(key_metadata.unwrap_or_default())?;
+                Ok(Cow::Owned(key))
+            }
+            DecryptionKeys::ViaAsyncRetriever(retriever) => {
+                let key = retriever.retrieve_key(key_metadata.unwrap_or_default()).await?;
                 Ok(Cow::Owned(key))
             }
         }
@@ -488,11 +552,16 @@ impl DecryptionPropertiesBuilder {
     }
 }
 
+enum EitherKeyRetriever {
+    Sync(Arc<dyn KeyRetriever>),
+    Async(Arc<dyn AsyncKeyRetriever>),
+}
+
 /// Builder for [`FileDecryptionProperties`] that uses a [`KeyRetriever`]
 ///
 /// See the [`KeyRetriever`] documentation for example usage.
 pub struct DecryptionPropertiesBuilderWithRetriever {
-    key_retriever: Arc<dyn KeyRetriever>,
+    key_retriever: EitherKeyRetriever,
     aad_prefix: Option<Vec<u8>>,
     footer_signature_verification: bool,
 }
@@ -502,7 +571,17 @@ impl DecryptionPropertiesBuilderWithRetriever {
     /// can be used to get decryption keys based on key metadata.
     pub fn new(key_retriever: Arc<dyn KeyRetriever>) -> DecryptionPropertiesBuilderWithRetriever {
         Self {
-            key_retriever,
+            key_retriever: EitherKeyRetriever::Sync(key_retriever),
+            aad_prefix: None,
+            footer_signature_verification: true,
+        }
+    }
+
+    /// Create a new [`DecryptionPropertiesBuilderWithRetriever`] by providing an [`AsyncKeyRetriever`] that
+    /// can be used to get decryption keys based on key metadata.
+    pub fn new_async(key_retriever: Arc<dyn AsyncKeyRetriever>) -> DecryptionPropertiesBuilderWithRetriever {
+        Self {
+            key_retriever: EitherKeyRetriever::Async(key_retriever),
             aad_prefix: None,
             footer_signature_verification: true,
         }
@@ -510,7 +589,10 @@ impl DecryptionPropertiesBuilderWithRetriever {
 
     /// Finalize the builder and return created [`FileDecryptionProperties`]
     pub fn build(self) -> Result<FileDecryptionProperties> {
-        let keys = DecryptionKeys::ViaRetriever(self.key_retriever);
+        let keys = match self.key_retriever {
+            EitherKeyRetriever::Sync(retriever) => DecryptionKeys::ViaRetriever(retriever),
+            EitherKeyRetriever::Async(retriever) => DecryptionKeys::ViaAsyncRetriever(retriever),
+        };
         Ok(FileDecryptionProperties {
             keys,
             aad_prefix: self.aad_prefix,
